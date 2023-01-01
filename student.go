@@ -26,6 +26,9 @@ type Student struct {
 }
 
 func (s *Student) Validate() error {
+	if s.PID == 0 {
+		return Errorf(EINVALID, "validate: student missing pid field")
+	}
 	if s.Name == "" {
 		return Errorf(EINVALID, "validate: student missing name field")
 	}
@@ -73,7 +76,7 @@ type StudentFilter struct {
 	AttendsSchool *bool `json:"attends_school"`
 
 	// Subjects filters on the subjects each student takes.
-	Subjects *[]Subject `json:"subjects"`
+	Subjects []Subject `json:"subjects"`
 }
 
 // RefreshStudents represents an request to the RefreshStudents serivce.
