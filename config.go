@@ -1,5 +1,9 @@
 package csb
 
+// CurrentAcademicYear indicates the current academic year, this isnt constant and changes every
+// academic year.
+const CurrentAcademicYear int = 2022
+
 // Config represents the structure of a json config file.
 type Config struct {
 	HTTP   httpConfig   `json:"http"`   // HTTP related configs.
