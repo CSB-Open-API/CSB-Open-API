@@ -18,16 +18,16 @@ type StudentService struct {
 	db *DB
 	// client for updates.
 	c *engage.Client
-	// saveNew indicates wether fetch to new students should be saved.
-	saveNew bool
+	// fallback indicates wether fetch to new students should be saved.
+	fallback bool
 }
 
 // NewStudentService creates a new student service with the provided database and engage client.
-func NewStudentService(db *DB, client *engage.Client, saveNew bool) *StudentService {
+func NewStudentService(db *DB, client *engage.Client, fallback bool) *StudentService {
 	return &StudentService{
-		db:      db,
-		c:       client,
-		saveNew: saveNew,
+		db:       db,
+		c:        client,
+		fallback: fallback,
 	}
 }
 
@@ -59,7 +59,7 @@ func (s *StudentService) FindStudentByPID(ctx context.Context, pid int) (*csb.St
 		if err != nil {
 			return nil, err
 		}
-		if !s.saveNew {
+		if !s.fallback {
 			return student, nil
 		}
 
@@ -147,11 +147,6 @@ func (s *StudentService) RefreshStudents(ctx context.Context, refresh csb.Refres
 		switch {
 		case studentEngage == nil && studentLocal == nil:
 			// no data from engage or local db.
-		case !studentEngage.AttendsSchool && studentLocal != nil && refresh.Purge:
-			// old student in db and willing to purge.
-			if err := deleteStudent(ctx, tx, PIDCount); err != nil {
-				return err
-			}
 		case studentEngage != nil && studentLocal == nil:
 			// engage ahead of local db.
 			// if engage is ahead of local db with students who dont attend the school
@@ -164,8 +159,16 @@ func (s *StudentService) RefreshStudents(ctx context.Context, refresh csb.Refres
 				return err
 			}
 		case studentEngage != nil && studentLocal != nil:
+			if !studentEngage.AttendsSchool && refresh.Purge {
+				if err := deleteStudent(ctx, tx, PIDCount); err != nil {
+					return err
+				}
+
+				break
+			}
+
 			// data from both engage and local db, update local db.
-			if err := updateStudent(ctx, tx, studentLocal.PID, studentEngage); err != nil {
+			if err := updateStudent(ctx, tx, studentLocal, studentEngage); err != nil {
 				return err
 			}
 		}
@@ -183,27 +186,158 @@ func (s *StudentService) RefreshStudents(ctx context.Context, refresh csb.Refres
 	return nil
 }
 
-func findStudentByPID(ctx context.Context, tx *sql.Tx, id int) (*csb.Student, error) {
+func findStudentByPID(ctx context.Context, tx *sql.Tx, pid int) (*csb.Student, error) {
+	s, err := findStudents(ctx, tx, csb.StudentFilter{PID: &pid})
+	if err != nil {
+		return nil, err
+	} else if len(s) == 0 {
+		return nil, csb.Errorf(csb.ENOTFOUND, "student not found")
+	}
 
+	return s[0], nil
 }
 
-func (s *StudentService) findStudentByPIDEngage(ctx context.Context, id int) (*csb.Student, error) {
+func (s *StudentService) findStudentByPIDEngage(ctx context.Context, pid int) (*csb.Student, error) {
+	stud := new(csb.Student)
+	stud.PID = pid
 
+	academicYears, err := s.c.GetAcademicYears(ctx, pid)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, academicYear := range academicYears {
+		if academicYear == csb.CurrentAcademicYear {
+			stud.AttendsSchool = true
+			break
+		}
+	}
+
+	periods, err := s.c.GetReportingPeriods(ctx, pid, academicYears)
+	if err != nil {
+		return nil, err
+	}
+
+	subjects, err := s.c.GetReportingSubjects(ctx, pid, academicYears, periods)
+	if err != nil {
+		return nil, err
+	}
+	stud.Subjects = subjects
+
+	columns, err := s.c.GetColumnsForSubjects(ctx, pid, academicYears, periods, subjects)
+	if err != nil {
+		return nil, err
+	}
+
+	renderAll, err := s.c.GetMarksheetRender(ctx, pid, academicYears, columns, periods, subjects)
+	if err != nil {
+		return nil, err
+	}
+
+	stud.Name = engage.NameFromRender(renderAll)
+	if stud.AttendsSchool {
+		stud.CurrentYear = engage.CurrentYearFromRender(renderAll)
+	}
+
+	return stud, nil
 }
 
 func findStudents(ctx context.Context, tx *sql.Tx, filter csb.StudentFilter) ([]*csb.Student, error) {
 }
 
 func createStudent(ctx context.Context, tx *sql.Tx, student *csb.Student) error {
+	if err := student.Validate(); err != nil {
+		return err
+	}
 
+	student.CreatedAt = time.Now()
+	student.UpdatedAt = student.CreatedAt
+	currYear := sql.NullInt64{Int64: int64(student.CurrentYear), Valid: student.AttendsSchool}
+
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO students (
+			pid,
+			name,
+			current_year,
+			attends_school,
+			created_at,
+			updated_at,
+		) VALUES (?, ?, ?, ?, ?, ?)
+	`,
+		student.PID,
+		student.Name,
+		currYear,
+		student.AttendsSchool,
+		student.CreatedAt,
+		student.UpdatedAt,
+	)
+	if err != nil {
+		return err
+	}
+
+	for _, subject := range student.Subjects {
+		if err := attachSubjectCode(ctx, tx, student.PID, subject.EngageCode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func updateStudent(ctx context.Context, tx *sql.Tx, id int, student *csb.Student) error {
+func updateStudent(ctx context.Context, tx *sql.Tx, prev, next *csb.Student) error {
+	if err := next.Validate(); err != nil {
+		return err
+	}
 
+	var addSubjects []csb.Subject
+	if len(next.Subjects) != len(prev.Subjects) {
+		diff := len(next.Subjects) - len(prev.Subjects)
+		addSubjects = make([]csb.Subject, diff)
+
+		diffMap := make(map[string]struct{}, len(prev.Subjects))
+		for _, v := range prev.Subjects {
+			diffMap[v.EngageCode] = struct{}{}
+		}
+
+		for _, v := range next.Subjects {
+			if _, ok := diffMap[v.EngageCode]; !ok {
+				addSubjects = append(addSubjects, v)
+			}
+		}
+	}
+
+	// add new subjects.
+	for _, v := range addSubjects {
+		if err := attachSubjectCode(ctx, tx, prev.PID, v.EngageCode); err != nil {
+			return err
+		}
+	}
+	// change in current year and current school atendance.
+	currYear := sql.NullInt64{Int64: int64(next.CurrentYear), Valid: next.AttendsSchool}
+	// change updated at.
+	next.UpdatedAt = time.Now()
+
+	_, err := tx.ExecContext(ctx, `
+		UPDATE students SET
+			current_year = ?,
+			attends_school = ?,
+			updated_at = ?
+		WHERE pid = ?
+	`,
+		currYear,
+		next.AttendsSchool,
+		next.UpdatedAt,
+		prev.PID,
+	)
+	return err
 }
 
 func deleteStudent(ctx context.Context, tx *sql.Tx, pid int) error {
+	if _, err := findStudentByPID(ctx, tx, pid); err != nil {
+		return err
+	}
 
+	_, err := tx.ExecContext(ctx, `DELETE FROM students WHERE pid = ?`, pid)
+	return err
 }
 
 func attachStudentMarks(ctx context.Context, tx *sql.Tx, student *csb.Student) (err error) {
