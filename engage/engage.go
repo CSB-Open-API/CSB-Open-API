@@ -51,6 +51,31 @@ type engageData struct {
 	} `json:"Attributes"`
 }
 
+// renderMarksheetRequest represents a request to the render marksheet endpoint.
+type renderMarksheetRequest struct {
+	AcademicYear                  string `json:"academicYear"`
+	ReportingPeriodList           string `json:"reportingPeriodList"`
+	YearGroupList                 string `json:"yearGroupList"`
+	SubjectList                   string `json:"subjectList"`
+	DivisionList                  string `json:"divisionList"`
+	BatchList                     string `json:"batchList"`
+	ColumnList                    string `json:"columnList"`
+	PupilIDs                      string `json:"pupilIDs"`
+	UniqueID                      string `json:"uniqueID"`
+	SetAsPreference               bool   `json:"setAsPreference"`
+	DefaultReportingPeriod        string `json:"defaultReportingPeriod"`
+	PageIndex                     string `json:"pageIndex"`
+	SortField                     string `json:"sortField"`
+	SortDirection                 string `json:"sortDirection"`
+	Sortable                      bool   `json:"sortable"`
+	ShowPupilName                 bool   `json:"showPupilName"`
+	AllowCollapseMarksheetColumns string `json:"allowCollapseMarksheetColumns"`
+	EnableFrozenHeadings          bool   `json:"enableFrozenHeadings"`
+	FilterSearch                  bool   `json:"filterSearch"`
+	Page                          int    `json:"page"`
+	PageSize                      int    `json:"pageSize"`
+}
+
 // error represents an error message from engage, this message will be parsed to a csb error.
 type engageError struct {
 	Message       string `json:"Message"`
@@ -78,29 +103,39 @@ func decodeError(resp *http.Response) error {
 	return csb.HttpStatusErrorf(resp.StatusCode, "engage: %v , stack trace: %v , exception type: %v", engErr.Message, engErr.StackTrace, engErr.ExceptionType)
 }
 
-// NameFromRender returns the pupils name from the render.
-//
-// returns ENOTFOUND if an invalid result is returned.
-func NameFromRender(render string) (string, error) {
-	res := nameRegexp.FindAllString(render, -1)
-	if len(res) != 1 {
-		return "", csb.Errorf(csb.ENOTFOUND, "couldnt match any name from current render")
-	}
-
-	out := res[0]
-	out = strings.TrimLeft(out, "<a>")
-	return strings.TrimRight(out, "</a>"), nil
-}
-
-// CurrentYearFromRender returns the pupils current year from the render.
+// NameFromRender returns the pupils name from the render and the last index.
 //
 // returns ENOTFOUND if no result matches.
-func CurrentYearFromRender(render string) (int, error) {
-	res := yearRegexp.FindAllString(render, -1)
+func NameFromRender(renderBuf []byte) (string, int, error) {
+	res := nameRegexp.FindIndex(renderBuf)
 	if res == nil {
-		return -1, csb.Errorf(csb.ENOTFOUND, "couldnt match any year from current render")
+		return "", -1, csb.Errorf(csb.ENOTFOUND, "couldnt match any name from current render")
 	}
 
-	year := strings.TrimLeft(res[len(res)-1], "Year ")
-	return strconv.Atoi(year)
+	out := string(renderBuf[res[0]:res[1]])
+	out = strings.TrimLeft("<a>", out)
+	out = strings.TrimRight("</a>", out)
+
+	return out, res[1], nil
+}
+
+// CurrentYearFromRender returns the pupils current year from the render and the last index.
+//
+// returns ENOTFOUND if no result matches.
+func CurrentYearFromRender(renderBuf []byte) (int, int, error) {
+	res := yearRegexp.FindAllIndex(renderBuf, -1)
+	if res == nil {
+		return -1, -1, csb.Errorf(csb.ENOTFOUND, "couldnt match any year from current render")
+	}
+
+	lastX := len(res) - 1
+	out := string(renderBuf[res[lastX][0]:res[lastX][1]])
+	out = strings.TrimLeft(out, "Year ")
+
+	year, err := strconv.Atoi(out)
+	if err != nil {
+		return -1, -1, err
+	}
+
+	return year, res[lastX][1], nil
 }
