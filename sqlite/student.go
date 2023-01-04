@@ -213,36 +213,61 @@ func (s *StudentService) findStudentByPIDEngage(ctx context.Context, pid int) (*
 		}
 	}
 
-	periods, err := s.c.GetReportingPeriods(ctx, pid, academicYears)
+	buf, err := s.c.GetMarksheetRender(ctx, pid, academicYears[len(academicYears)-1:], nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	subjects, err := s.c.GetReportingSubjects(ctx, pid, academicYears, periods)
+	var x int
+	stud.Name, x, err = engage.NameFromRender(buf)
 	if err != nil {
 		return nil, err
 	}
-	stud.Subjects = subjects
-
-	columns, err := s.c.GetColumnsForSubjects(ctx, pid, academicYears, periods, subjects)
-	if err != nil {
-		return nil, err
+	// FASTPATH: doesent attend school -> no need to get current year.
+	if !stud.AttendsSchool {
+		return stud, nil
 	}
 
-	renderAll, err := s.c.GetMarksheetRender(ctx, pid, academicYears, columns, periods, subjects)
+	// reslice the buffer since we know that the current year wont be before the name so we
+	// dont need to search that area.
+	buf = buf[x:]
+	stud.CurrentYear, _, err = engage.CurrentYearFromRender(buf)
 	if err != nil {
 		return nil, err
-	}
-
-	stud.Name = engage.NameFromRender(renderAll)
-	if stud.AttendsSchool {
-		stud.CurrentYear = engage.CurrentYearFromRender(renderAll)
 	}
 
 	return stud, nil
 }
 
 func findStudents(ctx context.Context, tx *sql.Tx, filter csb.StudentFilter) ([]*csb.Student, error) {
+	// prepare where clause.
+	where, args := []string{"1=1"}, []interface{}{}
+	if v := filter.PID; v != nil {
+		where = append(where, "pid = ?")
+		args = append(args, *v)
+	}
+	if v := filter.Name; v != nil {
+		where = append(where, "name LIKE ?")
+		args = append(args, "%"+*v+"%")
+	}
+	if v := filter.CurrentYear; v != nil {
+		where = append(where, "current_year = ?")
+		args = append(args, *v)
+	}
+	if v := filter.AttendsSchool; v != nil {
+		where = append(where, "attends_school = ?")
+		args = append(args, *v)
+	}
+
+	// `SELECT * FROM students WHERE id IN (
+	// 	SELECT student_id FROM student_subjects WHERE subject_id = 1
+	// 	INTERSECT
+	// 	SELECT student_id FROM student_subjects WHERE subject_id = 2
+	// 	INTERSECT
+	// 	SELECT student_id FROM student_subjects WHERE subject_id = 3
+	// )`
+
+	return nil, nil
 }
 
 func createStudent(ctx context.Context, tx *sql.Tx, student *csb.Student) error {
