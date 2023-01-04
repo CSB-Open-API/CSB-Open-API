@@ -4,8 +4,19 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
 
-	"github.com/Lambels/go-csb"
+	csb "github.com/Lambels/CSB-Open-API"
+)
+
+const RequestTimeout time.Duration = 2 * time.Second
+
+var (
+	yearRegexp = regexp.MustCompile(`Year\s\d+`)
+	nameRegexp = regexp.MustCompile(`<a>(.*?)<\/a>`)
 )
 
 // engageContext holds all relevant information when making a engage request.
@@ -65,4 +76,31 @@ func decodeError(resp *http.Response) error {
 	}
 
 	return csb.HttpStatusErrorf(resp.StatusCode, "engage: %v , stack trace: %v , exception type: %v", engErr.Message, engErr.StackTrace, engErr.ExceptionType)
+}
+
+// NameFromRender returns the pupils name from the render.
+//
+// returns ENOTFOUND if an invalid result is returned.
+func NameFromRender(render string) (string, error) {
+	res := nameRegexp.FindAllString(render, -1)
+	if len(res) != 1 {
+		return "", csb.Errorf(csb.ENOTFOUND, "couldnt match any name from current render")
+	}
+
+	out := res[0]
+	out = strings.TrimLeft(out, "<a>")
+	return strings.TrimRight(out, "</a>"), nil
+}
+
+// CurrentYearFromRender returns the pupils current year from the render.
+//
+// returns ENOTFOUND if no result matches.
+func CurrentYearFromRender(render string) (int, error) {
+	res := yearRegexp.FindAllString(render, -1)
+	if res == nil {
+		return -1, csb.Errorf(csb.ENOTFOUND, "couldnt match any year from current render")
+	}
+
+	year := strings.TrimLeft(res[len(res)-1], "Year ")
+	return strconv.Atoi(year)
 }
