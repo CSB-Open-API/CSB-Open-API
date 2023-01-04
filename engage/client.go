@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	csb "github.com/Lambels/CSB-Open-API"
@@ -28,14 +30,19 @@ type Client struct {
 func (c *Client) GetAcademicYears(ctx context.Context, pid int) ([]int, error) {
 	resURL := baseURL + academicYearsURL
 
-	res, err := c.post(ctx, resURL, engageContext{PupilIDs: pid})
+	res, err := c.post(ctx, resURL, engageContext{PupilIDs: fmt.Sprint(pid)})
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]string, len(res.D))
+	out := make([]int, len(res.D))
 	for _, data := range res.D {
-		out = append(out, data.Value)
+		v, err := strconv.Atoi(data.Value)
+		if err != nil {
+			return nil, err
+		}
+
+		out = append(out, v)
 	}
 
 	return out, nil
@@ -46,8 +53,8 @@ func (c *Client) GetReportingPeriods(ctx context.Context, pid int, academicYears
 	resURL := baseURL + reportingPeriodsURL
 
 	res, err := c.post(ctx, resURL, engageContext{
-		PupilIDs:      pid,
-		AcademicYears: strings.Join(academicYears, ","),
+		PupilIDs:      fmt.Sprint(pid),
+		AcademicYears: concatAcademicYears(academicYears),
 	})
 	if err != nil {
 		return nil, err
@@ -66,8 +73,8 @@ func (c *Client) GetReportingSubjects(ctx context.Context, pid int, academicYear
 	resURL := baseURL + reportingSubjectsURL
 
 	res, err := c.post(ctx, resURL, engageContext{
-		PupilIDs:         pid,
-		AcademicYears:    strings.Join(academicYears, ","),
+		PupilIDs:         fmt.Sprint(pid),
+		AcademicYears:    concatAcademicYears(academicYears),
 		ReportingPeriods: strings.Join(reportingPeriods, ","),
 	})
 	if err != nil {
@@ -76,7 +83,7 @@ func (c *Client) GetReportingSubjects(ctx context.Context, pid int, academicYear
 
 	out := make([]csb.Subject, len(res.D))
 	for _, data := range res.D {
-		out = append(out, csb.Subject(data.Value))
+		out = append(out, csb.Subject{EngageCode: data.Value})
 	}
 
 	return out, nil
@@ -85,13 +92,13 @@ func (c *Client) GetReportingSubjects(ctx context.Context, pid int, academicYear
 // GetColumnsForSubjects gets the "columns" for a pid in a specified academic years and periods range for the specified subjects.
 // A column refers to the type of exam.
 func (c *Client) GetColumnsForSubjects(ctx context.Context, pid int, academicYears []int, reportingPeriods []string, subjects []csb.Subject) ([]string, error) {
-	resURL := baseURL + reportingPeriodsURL
+	resURL := baseURL + columnsForSubjectsURL
 
 	res, err := c.post(ctx, resURL, engageContext{
-		PupilIDs:         pid,
-		AcademicYears:    strings.Join(academicYears, ","),
+		PupilIDs:         fmt.Sprint(pid),
+		AcademicYears:    concatAcademicYears(academicYears),
 		ReportingPeriods: strings.Join(reportingPeriods, ","),
-		SubjectList:      csb.Concat(subjects),
+		SubjectList:      concatSubjects(subjects),
 	})
 	if err != nil {
 		return nil, err
@@ -105,8 +112,55 @@ func (c *Client) GetColumnsForSubjects(ctx context.Context, pid int, academicYea
 	return out, nil
 }
 
-func (c *Client) GetMarksheetRender(ctx context.Context, pid int, academicYears []int, subjectColumns, reportingPeriods []string, reportingSubjects []csb.Subject) (string, error) {
-	return "", nil
+func (c *Client) GetMarksheetRender(ctx context.Context, pid int, academicYears []int, subjectColumns, reportingPeriods []string, reportingSubjects []csb.Subject) ([]byte, error) {
+	resURL := baseURL + marksheetRenderURL
+
+	body, err := json.Marshal(renderMarksheetRequest{
+		PupilIDs:                      fmt.Sprint(pid),
+		AcademicYear:                  concatAcademicYears(academicYears),
+		ReportingPeriodList:           strings.Join(reportingPeriods, ","),
+		ColumnList:                    strings.Join(subjectColumns, "|||"),
+		SubjectList:                   concatSubjects(reportingSubjects),
+		UniqueID:                      "Portal_PupilDetails",
+		SetAsPreference:               true,
+		PageIndex:                     "0",
+		SortField:                     "Surname",
+		SortDirection:                 "ASC",
+		Sortable:                      true,
+		ShowPupilName:                 true,
+		AllowCollapseMarksheetColumns: "true",
+		FilterSearch:                  true,
+		Page:                          1,
+		PageSize:                      500,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Add("Content-Type", "application/json")
+
+	resp, err := c.cc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeError(resp)
+	}
+
+	// 9.2KB indicates that the user wasnt found for some reason?
+	if resp.ContentLength == 9200 {
+		return nil, csb.Errorf(csb.ENOTFOUND, "couldnt find pupil")
+	}
+
+	buf := make([]byte, resp.ContentLength)
+	_, err = resp.Body.Read(buf)
+	return buf, err
 }
 
 // post sends a post request to url with the specified engage context. It checks for any errors during
@@ -168,4 +222,50 @@ type cookieHeaderTransport struct {
 func (t *cookieHeaderTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r.Header.Add("Cookie", t.cookie)
 	return t.d.RoundTrip(r)
+}
+
+func concatSubjects(subjects []csb.Subject) string {
+	switch len(subjects) {
+	case 0:
+		return ""
+	case 1:
+		return subjects[0].EngageCode
+	}
+
+	n := len(subjects) - 1
+	for _, v := range subjects {
+		n += len(v.EngageCode)
+	}
+
+	var b strings.Builder
+	b.Grow(n)
+	b.WriteString(subjects[0].EngageCode)
+	for _, v := range subjects {
+		b.WriteByte(',')
+		b.WriteString(v.EngageCode)
+	}
+
+	return b.String()
+}
+
+func concatAcademicYears(years []int) string {
+	switch len(years) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprint(years[0])
+	}
+
+	// assume years will be length of 4, at least for the next 8,000 years.
+	n := (len(years) - 1) * 5 // 5 since we concat with "," and the 4 digit long year. (1 + 4)
+
+	var b strings.Builder
+	b.Grow(n)
+	b.WriteString(fmt.Sprint(years[0]))
+	for _, v := range years {
+		b.WriteByte(',')
+		b.WriteString(fmt.Sprint(v))
+	}
+
+	return b.String()
 }
