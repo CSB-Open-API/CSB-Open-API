@@ -113,8 +113,8 @@ func NameFromRender(renderBuf []byte) (string, int, error) {
 	}
 
 	out := string(renderBuf[res[0]:res[1]])
-	out = strings.TrimLeft("<a>", out)
-	out = strings.TrimRight("</a>", out)
+	out = strings.TrimLeft(out, "<a>")
+	out = strings.TrimRight(out, "</a>")
 
 	return out, res[1], nil
 }
