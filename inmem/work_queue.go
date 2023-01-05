@@ -148,7 +148,7 @@ func (w *WorkQueue) Close() error {
 	return nil
 }
 
-// Subscription represents
+// Subscription represents a subscription to a transaction.
 type Subscription struct {
 	Id    int64
 	state *state // parent state.
