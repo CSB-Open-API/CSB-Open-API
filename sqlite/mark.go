@@ -55,7 +55,7 @@ func (s *MarkService) FindMarkByID(ctx context.Context, id int) (*csb.Mark, erro
 
 // FindMarksByPID returns a range of marks based on the pupil id.
 //
-// find marks only fetches local marks. To get all marks, use refresh handler/
+// find marks only fetches local marks. To get all marks, use refresh handler.
 func (s *MarkService) FindMarksByPID(ctx context.Context, pid int) ([]*csb.Mark, error) {
 	tx, err := s.db.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -68,7 +68,7 @@ func (s *MarkService) FindMarksByPID(ctx context.Context, pid int) ([]*csb.Mark,
 	marks, err := findMarksByPID(ctx, tx, pid)
 	if err != nil {
 		return nil, err
-	} else if err := attachMarksAssociationsWithStudent(ctx, tx, pid, marks); err != nil {
+	} else if err := attachMarksSubjectsWithStudent(ctx, tx, pid, marks); err != nil {
 		return nil, err
 	}
 
@@ -94,7 +94,7 @@ func (s *MarkService) FindMarksByPeriod(ctx context.Context, pid int, period csb
 	}
 
 	if full {
-		marks, err = s.findMarksByPeriodFallback(ctx, tx, pid, period)
+		marks, err = s.findMarksByFullPeriodFallback(ctx, tx, pid, period)
 	} else { // if the period isnt full use local data since we are potentially dealing with allot of data.
 		periods, err := s.periodService.BuildPeriods(ctx, pid, period.AcademicYear, *period.Term)
 		if err != nil {
@@ -106,7 +106,7 @@ func (s *MarkService) FindMarksByPeriod(ctx context.Context, pid int, period csb
 
 	if err != nil {
 		return nil, err
-	} else if err := attachMarksAssociationsWithStudent(ctx, tx, pid, marks); err != nil {
+	} else if err := attachMarksSubjectsWithStudent(ctx, tx, pid, marks); err != nil {
 		return nil, err
 	}
 
@@ -146,7 +146,7 @@ func (s *MarkService) FindMarksByPeriodRange(ctx context.Context, from, to csb.P
 	marks, err := findMarks(ctx, tx, filter)
 	if err != nil {
 		return nil, err
-	} else if err := attachMarksAssociationsWithStudent(ctx, tx, *filter.PID, marks); err != nil {
+	} else if err := attachMarksSubjectsWithStudent(ctx, tx, *filter.PID, marks); err != nil {
 		return nil, err
 	}
 	return marks, nil
@@ -216,31 +216,22 @@ func (s *MarkService) RefreshMarks(ctx context.Context, pid int, from, to csb.Pe
 	for len(periods) > 0 {
 		period := periods[0]
 
-		marksLocal, err := findMarksByPeriod(ctx, tx, pid, period)
+		marksLocal, err := findMarksByFullPeriod(ctx, tx, pid, period)
 		if err != nil {
+			return err
+		} else if err := attachMarksSubjectsWithStudent(ctx, tx, pid, marksLocal); err != nil {
 			return err
 		}
 
-		marksEngage, err := s.findMarksByPeriodEngage(ctx, pid, period)
+		marksEngage, err := s.findMarksByFullPeriodEngage(ctx, tx, pid, period)
 		if err != nil {
+			return err
+		} else if err := attachMarksSubjectsWithStudent(ctx, tx, pid, marksEngage); err != nil {
 			return err
 		}
 
-		// marks in the same period can only have different subjects, do a shallow difference
-		// check on only the subjects to save cpu usage.
-		//
-		// also just add new marks, it isnt often that marks get deleted or updated.
-		diff := make(map[string]struct{}, len(marksLocal))
-		for _, markLocal := range marksLocal {
-			diff[markLocal.Subject.Name] = struct{}{}
-		}
-
-		for _, markEngage := range marksEngage {
-			if _, ok := diff[markEngage.Subject.Name]; !ok {
-				if err := createMark(ctx, tx, markEngage); err != nil {
-					return err
-				}
-			}
+		if err := createDiff(ctx, tx, marksLocal, marksEngage); err != nil {
+			return err
 		}
 
 		select {
@@ -248,29 +239,79 @@ func (s *MarkService) RefreshMarks(ctx context.Context, pid int, from, to csb.Pe
 			return ctx.Err()
 		case <-time.After(engage.RequestTimeout):
 		}
+		periods = periods[1:]
 	}
 
 	return nil
 }
 
 func findMarkByID(ctx context.Context, tx *sql.Tx, id int) (*csb.Mark, error) {
+	m, err := findMarks(ctx, tx, csb.MarksFilter{ID: &id})
+	if err != nil {
+		return nil, err
+	} else if len(m) == 0 {
+		return nil, csb.Errorf(csb.ENOTFOUND, "mark not found")
+	}
 
+	return m[0], nil
 }
 
 func findMarksByPID(ctx context.Context, tx *sql.Tx, pid int) ([]*csb.Mark, error) {
+	m, err := findMarks(ctx, tx, csb.MarksFilter{PID: &pid})
+	if err != nil {
+		return nil, err
+	}
 
+	return m, nil
 }
 
-func (s *MarkService) findMarksByPeriodFallback(ctx context.Context, tx *sql.Tx, pid int, period csb.Period) ([]*csb.Mark, error) {
+func (s *MarkService) findMarksByFullPeriodEngage(ctx context.Context, tx *sql.Tx, pid int, period csb.Period) ([]*csb.Mark, error) {
+	engageTerm, err := s.periodService.PeriodToEngageTerm(ctx, pid, period)
+	if err != nil {
+		return nil, err
+	}
 
+	bufResp, err := s.c.GetMarksheetRender(
+		ctx,
+		pid,
+		[]int{period.AcademicYear},
+		[]string{engageTerm},
+		[]string{*period.Importance},
+		nil,
+	)
+
+	marks, _, err := engage.GetMarksFromRender(bufResp)
+	return marks, nil
 }
 
-func findMarksByPeriod(ctx context.Context, tx *sql.Tx, pid int, period csb.Period) ([]*csb.Mark, error) {
+func findMarksByFullPeriod(ctx context.Context, tx *sql.Tx, pid int, period csb.Period) ([]*csb.Mark, error) {
+	m, err := findMarks(ctx, tx, csb.MarksFilter{PID: &pid, Periods: []csb.Period{period}})
+	if err != nil {
+		return nil, err
+	}
 
+	return m, nil
 }
 
-func (s *MarkService) findMarksByPeriodEngage(ctx context.Context, pid int, period csb.Period) ([]*csb.Mark, error) {
+func (s *MarkService) findMarksByFullPeriodFallback(ctx context.Context, tx *sql.Tx, pid int, period csb.Period) (marks []*csb.Mark, err error) {
+	marks, err = findMarksByFullPeriod(ctx, tx, pid, period)
+	if err != nil {
+		return nil, err
+	}
 
+	if s.fallback {
+		engageMarks, err := s.findMarksByFullPeriodEngage(ctx, tx, pid, period)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := createDiff(ctx, tx, marks, engageMarks); err != nil {
+			return nil, err
+		}
+		marks = engageMarks
+	}
+
+	return marks, nil
 }
 
 func findMarks(ctx context.Context, tx *sql.Tx, filter csb.MarksFilter) ([]*csb.Mark, error) {
@@ -278,21 +319,101 @@ func findMarks(ctx context.Context, tx *sql.Tx, filter csb.MarksFilter) ([]*csb.
 }
 
 func deleteMark(ctx context.Context, tx *sql.Tx, id int) error {
+	if _, err := findMarkByID(ctx, tx, id); err != nil {
+		return err
+	}
 
+	_, err := tx.ExecContext(ctx, `DELETE FROM marks WHERE id = ?`, id)
+	return err
 }
 
 func createMark(ctx context.Context, tx *sql.Tx, mark *csb.Mark) error {
+	if err := mark.Validate(); err != nil {
+		return err
+	}
 
+	mark.CreatedAt = time.Now()
+
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO marks (
+			student_id,
+			subject_id,
+			teacher,
+			percentage,
+			academic_year,
+			term,
+			importance,
+			created_at,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		mark.StudentID,
+		mark.SubjectID,
+		mark.Teacher,
+		mark.Percentage,
+		mark.Period.AcademicYear,
+		mark.Period.Term,
+		mark.Period.Importance,
+		mark.CreatedAt,
+	)
+	return err
+}
+
+func createDiff(ctx context.Context, tx *sql.Tx, local, engage []*csb.Mark) error {
+	// marks in the same period can only have different subjects, do a shallow difference
+	// check on only the subjects to save cpu usage.
+	//
+	// also just add new marks, it isnt often that marks get deleted or updated.
+	diff := make(map[string]struct{}, len(local))
+	for _, markLocal := range local {
+		diff[markLocal.Subject.Name] = struct{}{}
+	}
+
+	for _, markEngage := range engage {
+		if _, ok := diff[markEngage.Subject.Name]; !ok {
+			if err := createMark(ctx, tx, markEngage); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func attachMarkAssociations(ctx context.Context, tx *sql.Tx, mark *csb.Mark) (err error) {
+	mark.Student, err = findStudentByPID(ctx, tx, mark.StudentID)
+	if err != nil {
+		return err
+	}
 
+	return attachMarkSubject(ctx, tx, mark)
 }
 
-func attachMarksAssociationsWithStudent(ctx context.Context, tx *sql.Tx, pid int, marks []*csb.Mark) (err error) {
+func attachMarksSubjectsWithStudent(ctx context.Context, tx *sql.Tx, pid int, marks []*csb.Mark) (err error) {
+	student, err := findStudentByPID(ctx, tx, pid)
+	if err != nil {
+		return err
+	}
 
+	for _, m := range marks {
+		m.Student = student
+		if err := attachMarkSubject(ctx, tx, m); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func attachMarkSubject(ctx context.Context, tx *sql.Tx, mark *csb.Mark) (err error) {
+	switch {
+	// have name, want engage code + id.
+	case mark.Subject.Name != "":
+		mark.Subject, err = findSubjectByName(ctx, tx, mark.Subject.Name)
 
+	// have id, want engage code + name.
+	case mark.Subject.ID != 0:
+		mark.Subject, err = findSubjectByID(ctx, tx, mark.Subject.ID)
+	}
+
+	return err
 }
