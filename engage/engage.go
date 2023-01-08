@@ -1,7 +1,9 @@
 package engage
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"regexp"
@@ -15,8 +17,9 @@ import (
 const RequestTimeout time.Duration = 2 * time.Second
 
 var (
-	yearRegexp = regexp.MustCompile(`Year\s\d+`)
-	nameRegexp = regexp.MustCompile(`<a>(.*?)<\/a>`)
+	yearRegexp       = regexp.MustCompile(`Year\s\d+`)
+	nameRegexp       = regexp.MustCompile(`<a>(.*?)<\/a>`)
+	percentageRegexp = regexp.MustCompile(`\\t\d+`)
 )
 
 // engageContext holds all relevant information when making a engage request.
@@ -138,4 +141,72 @@ func CurrentYearFromRender(renderBuf []byte) (int, int, error) {
 	}
 
 	return year, res[lastX][1], nil
+}
+
+// GetMarkFromRender returns the first mark populated with the subject name, teacher name and
+// percentage.
+func GetMarkFromRender(renderBuf []byte) (_ *csb.Mark, n int, _ error) {
+	mark := new(csb.Mark)
+
+	// get the percentage first.
+	res := percentageRegexp.FindIndex(renderBuf)
+	if res == nil {
+		return nil, -1, csb.Errorf(csb.ENOTFOUND, "couldnt match any percentage from current render")
+	}
+
+	raw := string(renderBuf[res[0]:res[1]])
+	percentage, err := strconv.Atoi(strings.TrimPrefix(raw, "\t"))
+	if err != nil {
+		return nil, -1, err
+	}
+	mark.Percentage = percentage
+	n += res[1]
+
+	// get subject name.
+	subject, remX := getSubjectName(renderBuf[n:])
+	if remX == -1 {
+		return nil, -1, errors.New("unexpected buffer index")
+	}
+	mark.Subject = csb.Subject{
+		Name: subject,
+	}
+	n += remX
+
+	// get teacher name.
+	teacher, remX := getTeacherName(renderBuf[n:])
+	if remX == 1 {
+		return nil, -1, errors.New("unexpected buffer index")
+	}
+	mark.Teacher = teacher
+	n += remX
+
+	return mark, n, nil
+}
+
+func getSubjectName(buf []byte) (string, int) {
+	x := bytes.IndexByte(buf, ',')
+	if x == -1 {
+		return "", -1
+	}
+
+	y := bytes.IndexByte(buf[x+2:], ',')
+	if y == -1 {
+		return "", -1
+	}
+
+	return string(buf[x+2 : y]), y
+}
+
+func getTeacherName(buf []byte) (string, int) {
+	x := bytes.IndexByte(buf, '<')
+	if x == -1 {
+		return "", -1
+	}
+
+	y := bytes.LastIndexByte(buf[:x+1], ',')
+	if y == -1 {
+		return "", -1
+	}
+
+	return string(buf[y+2 : y]), y
 }
