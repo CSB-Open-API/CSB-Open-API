@@ -56,6 +56,10 @@ type PeriodService interface {
 	// Exists checks wether a period exists.
 	Exists(ctx context.Context, pid int, period Period) (bool, error)
 
+	// PeriodToEngageTerm takes in a period and converts the period academic year and
+	// term to the engage equivalent.
+	PeriodToEngageTerm(ctx context.Context, pid int, period Period) (string, error)
+
 	// PeriodRange generates a range of periods [from, to].
 	//
 	// If pid is provided, the returned periods will have accuracy to importance level.
