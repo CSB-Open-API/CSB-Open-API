@@ -31,7 +31,7 @@ type Transaction struct {
 	// Id of the transaction.
 	Id int64 `json:"id"`
 	// Data of the transaction.
-	Data interface{} `json:"data"`
+	Data any `json:"data"`
 	// Ctx of the transaction, used to cancel the transaction.
 	Ctx context.Context
 }
