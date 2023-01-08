@@ -68,14 +68,14 @@ func (c *Client) GetReportingPeriods(ctx context.Context, pid int, academicYears
 	return out, nil
 }
 
-// GetReportingSubjects gets the reporting subjects for a PID in a specific range of academic years and reporting periods.
-func (c *Client) GetReportingSubjects(ctx context.Context, pid int, academicYears []int, reportingPeriods []string) ([]csb.Subject, error) {
+// GetReportingSubjects gets the reporting subjects for a PID in a specific range of academic years and reporting periods (terms).
+func (c *Client) GetReportingSubjects(ctx context.Context, pid int, academicYears []int, reportingTerms []string) ([]csb.Subject, error) {
 	resURL := baseURL + reportingSubjectsURL
 
 	res, err := c.post(ctx, resURL, engageContext{
 		PupilIDs:         fmt.Sprint(pid),
 		AcademicYears:    concatAcademicYears(academicYears),
-		ReportingPeriods: strings.Join(reportingPeriods, ","),
+		ReportingPeriods: strings.Join(reportingTerms, ","),
 	})
 	if err != nil {
 		return nil, err
@@ -89,15 +89,15 @@ func (c *Client) GetReportingSubjects(ctx context.Context, pid int, academicYear
 	return out, nil
 }
 
-// GetColumnsForSubjects gets the "columns" for a pid in a specified academic years and periods range for the specified subjects.
+// GetColumnsForSubjects gets the "columns" for a pid in the specified academic years and periods range (terms) for the specified subjects.
 // A column refers to the type of exam.
-func (c *Client) GetColumnsForSubjects(ctx context.Context, pid int, academicYears []int, reportingPeriods []string, subjects []csb.Subject) ([]string, error) {
+func (c *Client) GetColumnsForSubjects(ctx context.Context, pid int, academicYears []int, reportingTerms []string, subjects []csb.Subject) ([]string, error) {
 	resURL := baseURL + columnsForSubjectsURL
 
 	res, err := c.post(ctx, resURL, engageContext{
 		PupilIDs:         fmt.Sprint(pid),
 		AcademicYears:    concatAcademicYears(academicYears),
-		ReportingPeriods: strings.Join(reportingPeriods, ","),
+		ReportingPeriods: strings.Join(reportingTerms, ","),
 		SubjectList:      concatSubjects(subjects),
 	})
 	if err != nil {
@@ -112,14 +112,14 @@ func (c *Client) GetColumnsForSubjects(ctx context.Context, pid int, academicYea
 	return out, nil
 }
 
-func (c *Client) GetMarksheetRender(ctx context.Context, pid int, academicYears []int, subjectColumns, reportingPeriods []string, reportingSubjects []csb.Subject) ([]byte, error) {
+func (c *Client) GetMarksheetRender(ctx context.Context, pid int, academicYears []int, reportingTerms, reportingColumns []string, reportingSubjects []csb.Subject) ([]byte, error) {
 	resURL := baseURL + marksheetRenderURL
 
 	body, err := json.Marshal(renderMarksheetRequest{
 		PupilIDs:                      fmt.Sprint(pid),
 		AcademicYear:                  concatAcademicYears(academicYears),
-		ReportingPeriodList:           strings.Join(reportingPeriods, ","),
-		ColumnList:                    strings.Join(subjectColumns, "|||"),
+		ReportingPeriodList:           strings.Join(reportingTerms, ","),
+		ColumnList:                    strings.Join(reportingColumns, "|||"),
 		SubjectList:                   concatSubjects(reportingSubjects),
 		UniqueID:                      "Portal_PupilDetails",
 		SetAsPreference:               true,
