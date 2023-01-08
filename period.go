@@ -11,6 +11,10 @@ type Period struct {
 	Importance *string `json:"importance"`
 }
 
+// Full checks wether the period is full. If the period is full it has
+// all its fields populated.
+//
+// Full also validates the period and returns any errors from the validation process.
 func (p Period) Full() (bool, error) {
 	if err := p.Validate(); err != nil {
 		return false, err
