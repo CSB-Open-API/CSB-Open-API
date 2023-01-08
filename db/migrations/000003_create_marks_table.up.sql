@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS marks(
     academic_year INTEGER NOT NULL,
     term INTEGER NOT NULL,
     importance TEXT NOT NULL,
+    created_at DATE NOT NULL,
 
     FOREIGN KEY (student_id)
         REFERENCES students (pid)
