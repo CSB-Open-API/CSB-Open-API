@@ -18,8 +18,6 @@ func (s *Server) registerStudentRoutes(r chi.Router) {
 
 	// refresh pub/sub endpoints.
 	r.Post("/refresh", s.handleRefreshStudent)
-	r.Delete("/refresh/{id}", s.handleCancelTransaction)
-	r.Get("/refresh/{id}", s.handleRefreshUpdates)
 }
 
 // POST "/students"
