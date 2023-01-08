@@ -92,15 +92,15 @@ func decodeError(resp *http.Response) error {
 	}
 
 	if len(body) == 0 {
-		return csb.HttpStatusErrorf(resp.StatusCode, "engage: error body empty")
+		return csb.Errorf(csb.FromStatusToErrorCode(resp.StatusCode), "engage: error body empty")
 	}
 
 	var engErr engageError
 	if err := json.Unmarshal(body, &engErr); err != nil {
-		return csb.HttpStatusErrorf(resp.StatusCode, "engage: couldnt decode error body")
+		return csb.Errorf(csb.FromStatusToErrorCode(resp.StatusCode), "engage: couldnt decode error body")
 	}
 
-	return csb.HttpStatusErrorf(resp.StatusCode, "engage: %v , stack trace: %v , exception type: %v", engErr.Message, engErr.StackTrace, engErr.ExceptionType)
+	return csb.Errorf(csb.FromStatusToErrorCode(resp.StatusCode), "engage: %v , stack trace: %v , exception type: %v", engErr.Message, engErr.StackTrace, engErr.ExceptionType)
 }
 
 // NameFromRender returns the pupils name from the render and the last index.
