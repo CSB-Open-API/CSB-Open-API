@@ -69,13 +69,19 @@ func NewServer() *Server {
 		},
 	))
 
-	// register server routes.
+	// routes for creating and reading transactions.
+	s.router.Route("/transactions", func(r chi.Router) {
+		s.registerTransactionRoutes(r)
+	})
+	// routes for refreshing, getting and deleting students.
 	s.router.Route("/students", func(r chi.Router) {
 		s.registerStudentRoutes(r)
 	})
+	// routes for refreshing, getting and deleting marks.
 	s.router.Route("/marks", func(r chi.Router) {
 		s.registerMarkRoutes(r)
 	})
+	// routes for building, validating and generating period ranges.
 	s.router.Route("/periods", func(r chi.Router) {
 		s.registerPeriodRoutes(r)
 	})
