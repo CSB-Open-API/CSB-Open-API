@@ -1,15 +1,12 @@
 package http
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"time"
 
 	csb "github.com/Lambels/CSB-Open-API"
 	"github.com/go-chi/chi/v5"
-	"github.com/gorilla/websocket"
 )
 
 // registerStudentRoutes registers all the routes of the student service.
@@ -100,107 +97,13 @@ func (s *Server) handleRefreshStudent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(r.Context())
-	transaction := &csb.Transaction{
-		Data: refresh,
-		Ctx:  ctx,
-	}
-	if err := s.WorkQueue.Publish(transaction); err != nil {
+	transaction, err := s.pushTransaction(r.Context(), refresh)
+	if err != nil {
 		SendErr(w, r, err)
 		return
 	}
 
-	s.cancelTransactions[transaction.Id] = cancel
 	if err := WriteJSON(w, transaction); err != nil {
 		LogError(r, err)
-	}
-}
-
-// DELETE "students/refresh/{id}"
-//
-// handleCancelTransaction cancels the transaction with the provided id. returns 404
-// if the transaction isnt found and 204 if the transaction was cancelled.
-func (s *Server) handleCancelTransaction(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt((chi.URLParam(r, "id")), 10, 64)
-	if err != nil {
-		SendErr(w, r, csb.Errorf(csb.EINVALID, "invalid id format"))
-		return
-	}
-
-	s.transactionMu.Lock()
-	defer s.transactionMu.Unlock()
-	cancel, ok := s.cancelTransactions[id]
-	if !ok {
-		SendErr(w, r, csb.Errorf(csb.ENOTFOUND, "transaction not found"))
-		return
-	}
-	cancel()
-	delete(s.cancelTransactions, id)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// GET "students/refresh/{id}"
-//
-// This is a websocket endpoint, the connection is upgraded to a websocket connection
-// and updates are fed to the client. After the final status message "Done" or "Cancelled" the
-// connection is closed.
-func (s *Server) handleRefreshUpdates(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt((chi.URLParam(r, "id")), 10, 64)
-	if err != nil {
-		SendErr(w, r, csb.Errorf(csb.EINVALID, "invalid id format"))
-		return
-	}
-
-	sub, err := s.WorkQueue.Subscribe(r.Context(), id)
-	if err != nil {
-		SendErr(w, r, err)
-		return
-	}
-
-	conn, err := s.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		LogError(r, err)
-		return
-	}
-	// close subscription when peer closing.
-	conn.SetCloseHandler(func(code int, text string) error {
-		sub.Close()
-
-		closeMsg := websocket.FormatCloseMessage(code, "")
-		conn.WriteControl(code, closeMsg, time.Now().Add(1*time.Second))
-		return nil
-	})
-
-	timer := time.NewTicker(websocketPingConnections)
-	defer timer.Stop()
-	defer conn.Close()
-	for {
-		select {
-		case status, ok := <-sub.C():
-			// subscription closed, notify peer that the connection is closing.
-			if !ok {
-				conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			sendBuf, err := json.Marshal(status)
-			if err != nil {
-				LogError(r, err)
-				conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			if err := conn.WriteMessage(websocket.TextMessage, sendBuf); err != nil {
-				LogError(r, err)
-				return
-			}
-
-		case <-timer.C:
-			conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
-			if err := conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
-				LogError(r, err)
-				return
-			}
-		}
 	}
 }
