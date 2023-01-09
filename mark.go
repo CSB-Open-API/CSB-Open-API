@@ -31,7 +31,7 @@ func (m *Mark) Validate() error {
 	if m.StudentID == 0 {
 		return Errorf(EINVALID, "validate: mark missing student id field")
 	}
-	if m.StudentID == 0 {
+	if m.SubjectID == 0 {
 		return Errorf(EINVALID, "validate: mark missing subject id field")
 	}
 
