@@ -301,7 +301,7 @@ func createStudent(ctx context.Context, tx *sql.Tx, student *csb.Student) error 
 	}
 
 	for _, subject := range student.Subjects {
-		if err := attachSubjectCode(ctx, tx, student.PID, subject.EngageCode); err != nil {
+		if err := attachSubjectCodeToStudent(ctx, tx, student.PID, subject.EngageCode); err != nil {
 			return err
 		}
 	}
@@ -332,7 +332,7 @@ func updateStudent(ctx context.Context, tx *sql.Tx, prev, next *csb.Student) err
 
 	// add new subjects.
 	for _, v := range addSubjects {
-		if err := attachSubjectCode(ctx, tx, prev.PID, v.EngageCode); err != nil {
+		if err := attachSubjectCodeToStudent(ctx, tx, prev.PID, v.EngageCode); err != nil {
 			return err
 		}
 	}
